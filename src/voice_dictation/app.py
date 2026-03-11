@@ -1,3 +1,4 @@
+import signal
 import threading
 import winsound
 
@@ -6,6 +7,8 @@ import pystray
 from PIL import Image, ImageDraw
 
 from . import config
+from . import logger
+from . import db
 from .recorder import Recorder
 from .transcriber import transcribe
 from .injector import inject_text
@@ -18,6 +21,13 @@ class VoiceDictation:
         self._model_idx = 0
         self._state = "idle"  # idle | recording | transcribing
         self._tray: pystray.Icon | None = None
+        self._stop_event = threading.Event()
+
+        # Session stats
+        self._total_requests = 0
+        self._total_audio_s = 0.0
+        self._total_cost = 0.0
+        self._total_tokens = 0
 
     @property
     def language(self) -> str:
@@ -34,7 +44,7 @@ class VoiceDictation:
     # --- Icon generation ---
 
     def _make_icon(self, color: str) -> Image.Image:
-        img = Image.new("RGBA", 64, (0, 0, 0, 0))
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         draw.ellipse([4, 4, 60, 60], fill=color)
         return img
@@ -88,13 +98,12 @@ class VoiceDictation:
             return  # ignore while transcribing
 
         if self._state == "idle":
-            # Start recording
             self._state = "recording"
             self._update_icon()
             winsound.Beep(1000, 100)
+            logger.recording_start()
             self._recorder.start()
         else:
-            # Stop recording → transcribe
             winsound.Beep(600, 100)
             wav_bytes = self._recorder.stop()
             if not wav_bytes:
@@ -102,10 +111,12 @@ class VoiceDictation:
                 self._update_icon()
                 return
 
+            audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)  # 16-bit mono
+            logger.recording_stop(audio_s)
+
             self._state = "transcribing"
             self._update_icon()
 
-            # Transcribe in background thread to keep UI responsive
             threading.Thread(
                 target=self._do_transcribe,
                 args=(wav_bytes,),
@@ -114,11 +125,35 @@ class VoiceDictation:
 
     def _do_transcribe(self, wav_bytes: bytes) -> None:
         try:
-            text = transcribe(wav_bytes, self.language, self.model)
-            if text.strip():
-                inject_text(text)
+            result = transcribe(wav_bytes, self.language, self.model)
+            if result.text.strip():
+                inject_text(result.text)
+
+                # Log to terminal
+                logger.transcription_result(
+                    text=result.text,
+                    model=result.model,
+                    language=result.language,
+                    audio_duration_s=result.audio_duration_s,
+                    latency_s=result.latency_s,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    total_tokens=result.total_tokens,
+                )
+
+                # Log to database
+                db.log_transcription(result)
+
+                # Update session stats
+                cost_per_min = logger.MODEL_COST_PER_MIN.get(result.model, 0.006)
+                self._total_requests += 1
+                self._total_audio_s += result.audio_duration_s
+                self._total_cost += result.audio_duration_s / 60.0 * cost_per_min
+                self._total_tokens += result.total_tokens or 0
+            else:
+                logger.transcription_empty()
         except Exception as e:
-            print(f"Transcription error: {e}")
+            logger.transcription_error(e)
         finally:
             self._state = "idle"
             self._update_icon()
@@ -127,13 +162,13 @@ class VoiceDictation:
         self._language_idx = (self._language_idx + 1) % len(config.LANGUAGES)
         self._update_icon()
         self._refresh_menu()
-        print(f"Language: {self.language_label}")
+        logger.language_switch(self.language_label)
 
     def _on_toggle_model(self, *_args) -> None:
         self._model_idx = (self._model_idx + 1) % len(config.MODELS)
         self._update_icon()
         self._refresh_menu()
-        print(f"Model: {self.model}")
+        logger.model_switch(self.model)
 
     def _on_quit(self, *_args) -> None:
         if self._recorder.is_recording:
@@ -141,6 +176,7 @@ class VoiceDictation:
         keyboard.unhook_all()
         if self._tray is not None:
             self._tray.stop()
+        self._stop_event.set()
 
     # --- Main loop ---
 
@@ -154,19 +190,45 @@ class VoiceDictation:
         keyboard.add_hotkey(config.HOTKEY_LANGUAGE, self._on_toggle_language, suppress=True)
         keyboard.add_hotkey(config.HOTKEY_MODEL, self._on_toggle_model, suppress=True)
 
-        print(f"Voice Dictation running — {self.language_label} | {self.model}")
-        print(f"  Record:   {config.HOTKEY_RECORD}")
-        print(f"  Language: {config.HOTKEY_LANGUAGE}")
-        print(f"  Model:    {config.HOTKEY_MODEL}")
+        logger.startup(
+            language_label=self.language_label,
+            model=self.model,
+            hotkeys={
+                "record": config.HOTKEY_RECORD,
+                "language": config.HOTKEY_LANGUAGE,
+                "model": config.HOTKEY_MODEL,
+                "quit": "ctrl+c",
+            },
+        )
 
-        # System tray (blocks on this thread)
+        # Handle Ctrl+C gracefully
+        signal.signal(signal.SIGINT, lambda *_: self._on_quit())
+
+        # Run tray in a background thread so main thread can catch Ctrl+C
         self._tray = pystray.Icon(
             name="voice-dictation",
             icon=self._icon_idle,
             title=self._build_tooltip(),
             menu=self._build_menu(),
         )
-        self._tray.run()
+        tray_thread = threading.Thread(target=self._tray.run, daemon=True)
+        tray_thread.start()
+
+        # Main thread polls so Ctrl+C can interrupt (Windows limitation)
+        try:
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=0.5)
+        except KeyboardInterrupt:
+            self._on_quit()
+
+        logger.session_summary(
+            self._total_requests,
+            self._total_audio_s,
+            self._total_cost,
+            self._total_tokens,
+        )
+        db.close()
+        logger.shutdown()
 
 
 def main():
