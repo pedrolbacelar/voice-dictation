@@ -61,6 +61,18 @@ All transcriptions are logged to a local SQLite database (`voice_dictation.db` i
 - Input/output/total tokens
 - Estimated cost
 
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Hotkey Press] --> B[Recorder]
+    B -->|WAV bytes| C[OpenAI API]
+    C -->|text + tokens| D[Injector]
+    D -->|Ctrl+V| E[Cursor Position]
+    C -->|metadata| F[SQLite DB]
+    C -->|metadata| G[Terminal Logger]
+```
+
 ## Project Structure
 
 ```
