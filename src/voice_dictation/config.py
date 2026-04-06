@@ -17,10 +17,14 @@ CHANNELS = 1
 MODELS = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
 
 # Languages (toggled via hotkey)
-LANGUAGES = ["en", "pt"]
+LANGUAGES = ["pt", "en"]
 LANGUAGE_LABELS = {"en": "English", "pt": "Português"}
+
+# Recording limits
+MAX_RECORDING_SECONDS = 300  # 5 minutes — auto-stops to prevent runaway recordings
 
 # Hotkeys
 HOTKEY_RECORD = "ctrl+shift+space"
 HOTKEY_LANGUAGE = "ctrl+shift+l"
 HOTKEY_MODEL = "ctrl+shift+m"
+HOTKEY_RECALL = "ctrl+shift+r"
