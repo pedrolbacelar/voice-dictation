@@ -71,6 +71,31 @@ def log_transcription(result: TranscriptionResult) -> int:
     return cursor.lastrowid
 
 
+def get_recent(n: int = 5) -> list[dict]:
+    """Return the last *n* transcriptions, newest first."""
+    conn = _get_conn()
+    rows = conn.execute(
+        """
+        SELECT id, timestamp, text, language, model, audio_duration_s
+        FROM transcriptions
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (n,),
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "text": r[2],
+            "language": r[3],
+            "model": r[4],
+            "audio_duration_s": r[5],
+        }
+        for r in rows
+    ]
+
+
 def get_session_stats() -> dict:
     """Get aggregate stats for all transcriptions."""
     conn = _get_conn()

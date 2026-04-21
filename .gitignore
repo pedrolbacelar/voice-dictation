@@ -6,3 +6,5 @@ dist/
 build/
 .eggs/
 *.db
+*.db-shm
+*.db-wal

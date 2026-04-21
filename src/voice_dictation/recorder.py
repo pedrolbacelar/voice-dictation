@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import io
+import threading
 import wave
+from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -13,13 +17,16 @@ class Recorder:
     def __init__(self):
         self._frames: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
+        self._timer: threading.Timer | None = None
+        self._on_max_reached: Optional[Callable] = None
 
     @property
     def is_recording(self) -> bool:
         return self._stream is not None and self._stream.active
 
-    def start(self) -> None:
+    def start(self, on_max_reached: Optional[Callable] = None) -> None:
         self._frames = []
+        self._on_max_reached = on_max_reached
         self._stream = sd.InputStream(
             samplerate=config.SAMPLE_RATE,
             channels=config.CHANNELS,
@@ -28,8 +35,25 @@ class Recorder:
         )
         self._stream.start()
 
+        # Auto-stop after MAX_RECORDING_SECONDS
+        self._timer = threading.Timer(
+            config.MAX_RECORDING_SECONDS,
+            self._auto_stop,
+        )
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _auto_stop(self) -> None:
+        """Called when max recording time is reached."""
+        if self.is_recording and self._on_max_reached:
+            self._on_max_reached()
+
     def stop(self) -> bytes:
         """Stop recording and return WAV bytes."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()

@@ -55,6 +55,15 @@ def recording_stop(duration_s: float) -> None:
     )
 
 
+def recording_max_reached(max_seconds: int) -> None:
+    mins = max_seconds // 60
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_YELLOW}⚠ max{_RESET}"
+        f"  {_DIM}auto-stopped at {mins}min limit{_RESET}",
+        flush=True,
+    )
+
+
 def transcription_result(
     text: str,
     model: str,
@@ -98,6 +107,23 @@ def transcription_error(error: Exception) -> None:
     print(
         f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_RED}✗ error{_RESET}"
         f"  {_DIM}{error}{_RESET}",
+        flush=True,
+    )
+
+
+def recall_injected(text: str) -> None:
+    preview = text.strip().replace("\n", " ")
+    if len(preview) > 80:
+        preview = preview[:77] + "..."
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_CYAN}↩ recall{_RESET}  {_WHITE}{preview}{_RESET}",
+        flush=True,
+    )
+
+
+def recall_empty() -> None:
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_DIM}  (no transcriptions to recall){_RESET}",
         flush=True,
     )
 
