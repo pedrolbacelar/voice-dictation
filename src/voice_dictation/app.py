@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 from . import config
 from . import logger
 from . import db
+from . import media
 from .recorder import Recorder
 from .transcriber import transcribe
 from .injector import inject_text
@@ -20,6 +21,7 @@ class VoiceDictation:
         self._language_idx = 0
         self._model_idx = 0
         self._state = "idle"  # idle | recording | transcribing
+        self._paused_media = False
         self._tray: pystray.Icon | None = None
         self._stop_event = threading.Event()
 
@@ -93,6 +95,11 @@ class VoiceDictation:
 
     # --- Hotkey handlers ---
 
+    def _resume_media_if_paused(self) -> None:
+        if self._paused_media:
+            media.resume()
+            self._paused_media = False
+
     def _on_toggle_record(self) -> None:
         if self._state == "transcribing":
             return  # ignore while transcribing
@@ -102,13 +109,15 @@ class VoiceDictation:
             self._update_icon()
             winsound.Beep(1000, 100)
             logger.recording_start()
-            self._recorder.start()
+            self._paused_media = media.pause_if_playing()
+            self._recorder.start(on_max_reached=self._on_max_recording)
         else:
             winsound.Beep(600, 100)
             wav_bytes = self._recorder.stop()
             if not wav_bytes:
                 self._state = "idle"
                 self._update_icon()
+                self._resume_media_if_paused()
                 return
 
             audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)  # 16-bit mono
@@ -157,6 +166,45 @@ class VoiceDictation:
         finally:
             self._state = "idle"
             self._update_icon()
+            self._resume_media_if_paused()
+
+    def _on_max_recording(self) -> None:
+        """Called when recording hits the max duration limit."""
+        if self._state != "recording":
+            return
+        logger.recording_max_reached(config.MAX_RECORDING_SECONDS)
+        winsound.Beep(600, 100)
+        winsound.Beep(600, 100)  # double beep to signal auto-stop
+        wav_bytes = self._recorder.stop()
+        if not wav_bytes:
+            self._state = "idle"
+            self._update_icon()
+            self._resume_media_if_paused()
+            return
+
+        audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)
+        logger.recording_stop(audio_s)
+
+        self._state = "transcribing"
+        self._update_icon()
+
+        threading.Thread(
+            target=self._do_transcribe,
+            args=(wav_bytes,),
+            daemon=True,
+        ).start()
+
+    def _on_recall(self) -> None:
+        """Re-paste the most recent transcription at the cursor."""
+        if self._state != "idle":
+            return
+        recent = db.get_recent(1)
+        if not recent:
+            logger.recall_empty()
+            return
+        text = recent[0]["text"]
+        inject_text(text)
+        logger.recall_injected(text)
 
     def _on_toggle_language(self, *_args) -> None:
         self._language_idx = (self._language_idx + 1) % len(config.LANGUAGES)
@@ -173,6 +221,7 @@ class VoiceDictation:
     def _on_quit(self, *_args) -> None:
         if self._recorder.is_recording:
             self._recorder.stop()
+        self._resume_media_if_paused()
         keyboard.unhook_all()
         if self._tray is not None:
             self._tray.stop()
@@ -189,6 +238,7 @@ class VoiceDictation:
         keyboard.add_hotkey(config.HOTKEY_RECORD, self._on_toggle_record, suppress=True)
         keyboard.add_hotkey(config.HOTKEY_LANGUAGE, self._on_toggle_language, suppress=True)
         keyboard.add_hotkey(config.HOTKEY_MODEL, self._on_toggle_model, suppress=True)
+        keyboard.add_hotkey(config.HOTKEY_RECALL, self._on_recall, suppress=True)
 
         logger.startup(
             language_label=self.language_label,
@@ -197,6 +247,7 @@ class VoiceDictation:
                 "record": config.HOTKEY_RECORD,
                 "language": config.HOTKEY_LANGUAGE,
                 "model": config.HOTKEY_MODEL,
+                "recall": config.HOTKEY_RECALL,
                 "quit": "ctrl+c",
             },
         )

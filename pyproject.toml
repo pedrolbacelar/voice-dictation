@@ -15,6 +15,7 @@ dependencies = [
     "Pillow",
     "keyboard",
     "python-dotenv",
+    "winsdk; platform_system == 'Windows'",
 ]
 
 [project.scripts]
