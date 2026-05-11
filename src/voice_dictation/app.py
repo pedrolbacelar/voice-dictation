@@ -240,11 +240,16 @@ class VoiceDictation:
             print("ERROR: OPENAI_API_KEY not set. Add it to .env in the repo root.")
             return
 
-        # Register global hotkeys
-        keyboard.add_hotkey(config.HOTKEY_RECORD, self._on_toggle_record, suppress=True)
-        keyboard.add_hotkey(config.HOTKEY_LANGUAGE, self._on_toggle_language, suppress=True)
-        keyboard.add_hotkey(config.HOTKEY_MODEL, self._on_toggle_model, suppress=True)
-        keyboard.add_hotkey(config.HOTKEY_RECALL, self._on_recall, suppress=True)
+        # Register global hotkeys. Handlers run on a worker thread so the
+        # low-level keyboard hook returns immediately — Windows disables hooks
+        # that exceed LowLevelHooksTimeout (~300ms), causing the hotkey to leak.
+        def _dispatch(fn):
+            return lambda: threading.Thread(target=fn, daemon=True).start()
+
+        keyboard.add_hotkey(config.HOTKEY_RECORD, _dispatch(self._on_toggle_record), suppress=True)
+        keyboard.add_hotkey(config.HOTKEY_LANGUAGE, _dispatch(self._on_toggle_language), suppress=True)
+        keyboard.add_hotkey(config.HOTKEY_MODEL, _dispatch(self._on_toggle_model), suppress=True)
+        keyboard.add_hotkey(config.HOTKEY_RECALL, _dispatch(self._on_recall), suppress=True)
 
         logger.startup(
             language_label=self.language_label,
