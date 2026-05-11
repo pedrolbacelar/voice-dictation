@@ -10,6 +10,7 @@ from . import config
 from . import logger
 from . import db
 from . import media
+from .overlay import RecordingOverlay
 from .recorder import Recorder
 from .transcriber import transcribe
 from .injector import inject_text
@@ -18,6 +19,7 @@ from .injector import inject_text
 class VoiceDictation:
     def __init__(self):
         self._recorder = Recorder()
+        self._overlay = RecordingOverlay()
         self._language_idx = 0
         self._model_idx = 0
         self._state = "idle"  # idle | recording | transcribing
@@ -111,9 +113,11 @@ class VoiceDictation:
             logger.recording_start()
             self._paused_media = media.pause_if_playing()
             self._recorder.start(on_max_reached=self._on_max_recording)
+            self._overlay.show()
         else:
             winsound.Beep(600, 100)
             wav_bytes = self._recorder.stop()
+            self._overlay.hide()
             if not wav_bytes:
                 self._state = "idle"
                 self._update_icon()
@@ -176,6 +180,7 @@ class VoiceDictation:
         winsound.Beep(600, 100)
         winsound.Beep(600, 100)  # double beep to signal auto-stop
         wav_bytes = self._recorder.stop()
+        self._overlay.hide()
         if not wav_bytes:
             self._state = "idle"
             self._update_icon()
@@ -221,6 +226,7 @@ class VoiceDictation:
     def _on_quit(self, *_args) -> None:
         if self._recorder.is_recording:
             self._recorder.stop()
+        self._overlay.destroy()
         self._resume_media_if_paused()
         keyboard.unhook_all()
         if self._tray is not None:
@@ -265,10 +271,13 @@ class VoiceDictation:
         tray_thread = threading.Thread(target=self._tray.run, daemon=True)
         tray_thread.start()
 
-        # Main thread polls so Ctrl+C can interrupt (Windows limitation)
+        # Main thread polls so Ctrl+C can interrupt (Windows limitation).
+        # It also pumps the Tk overlay — Tk must be serviced on the thread
+        # that created it (here, the main thread).
         try:
             while not self._stop_event.is_set():
-                self._stop_event.wait(timeout=0.5)
+                self._overlay.pump()
+                self._stop_event.wait(timeout=0.05)
         except KeyboardInterrupt:
             self._on_quit()
 

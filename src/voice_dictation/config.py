@@ -28,3 +28,7 @@ HOTKEY_RECORD = "ctrl+shift+space"
 HOTKEY_LANGUAGE = "ctrl+shift+l"
 HOTKEY_MODEL = "ctrl+shift+m"
 HOTKEY_RECALL = "ctrl+shift+r"
+
+# Visual recording indicators (primary monitor only)
+SHOW_RECORDING_BORDER = True  # pulsing red border around the screen
+SHOW_RECORDING_WIDGET = True  # small "● REC" widget at the top-right corner
