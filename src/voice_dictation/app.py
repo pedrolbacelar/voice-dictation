@@ -2,7 +2,6 @@ import signal
 import threading
 import winsound
 
-import keyboard
 import pystray
 from PIL import Image, ImageDraw
 
@@ -10,6 +9,7 @@ from . import config
 from . import logger
 from . import db
 from . import media
+from .hotkeys import HotkeyManager
 from .overlay import RecordingOverlay
 from .recorder import Recorder
 from .transcriber import transcribe
@@ -25,6 +25,7 @@ class VoiceDictation:
         self._state = "idle"  # idle | recording | transcribing
         self._paused_media = False
         self._tray: pystray.Icon | None = None
+        self._hotkeys: HotkeyManager | None = None
         self._stop_event = threading.Event()
 
         # Session stats
@@ -228,7 +229,8 @@ class VoiceDictation:
             self._recorder.stop()
         self._overlay.destroy()
         self._resume_media_if_paused()
-        keyboard.unhook_all()
+        if self._hotkeys is not None:
+            self._hotkeys.stop()
         if self._tray is not None:
             self._tray.stop()
         self._stop_event.set()
@@ -240,16 +242,15 @@ class VoiceDictation:
             print("ERROR: OPENAI_API_KEY not set. Add it to .env in the repo root.")
             return
 
-        # Register global hotkeys. Handlers run on a worker thread so the
-        # low-level keyboard hook returns immediately — Windows disables hooks
-        # that exceed LowLevelHooksTimeout (~300ms), causing the hotkey to leak.
-        def _dispatch(fn):
-            return lambda: threading.Thread(target=fn, daemon=True).start()
-
-        keyboard.add_hotkey(config.HOTKEY_RECORD, _dispatch(self._on_toggle_record), suppress=True)
-        keyboard.add_hotkey(config.HOTKEY_LANGUAGE, _dispatch(self._on_toggle_language), suppress=True)
-        keyboard.add_hotkey(config.HOTKEY_MODEL, _dispatch(self._on_toggle_model), suppress=True)
-        keyboard.add_hotkey(config.HOTKEY_RECALL, _dispatch(self._on_recall), suppress=True)
+        # Register global hotkeys via Win32 RegisterHotKey (see hotkeys.py).
+        self._hotkeys = HotkeyManager()
+        self._hotkeys.register(config.HOTKEY_RECORD, self._on_toggle_record)
+        self._hotkeys.register(config.HOTKEY_LANGUAGE, self._on_toggle_language)
+        self._hotkeys.register(config.HOTKEY_MODEL, self._on_toggle_model)
+        self._hotkeys.register(config.HOTKEY_RECALL, self._on_recall)
+        failures = self._hotkeys.start()
+        for spec, err in failures:
+            print(f"ERROR: failed to register hotkey {spec!r} (GetLastError={err}) — likely owned by another process")
 
         logger.startup(
             language_label=self.language_label,
