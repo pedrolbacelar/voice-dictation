@@ -141,7 +141,7 @@ class VoiceDictation:
         try:
             result = transcribe(wav_bytes, self.language, self.model)
             if result.text.strip():
-                inject_text(result.text)
+                inject_text(result.text, press_enter=True)
 
                 # Log to terminal
                 logger.transcription_result(

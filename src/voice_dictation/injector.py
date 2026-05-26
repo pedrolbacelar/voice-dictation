@@ -65,8 +65,12 @@ def _set_clipboard(text: str) -> None:
         user32.CloseClipboard()
 
 
-def inject_text(text: str) -> None:
-    """Paste text at the current cursor position via clipboard."""
+def inject_text(text: str, press_enter: bool = False) -> None:
+    """Paste text at the current cursor position via clipboard.
+
+    If press_enter is True, send Enter after the paste settles — useful for
+    chat-style inputs where the user wants to submit immediately.
+    """
     # Save original clipboard
     try:
         original = _get_clipboard()
@@ -78,6 +82,10 @@ def inject_text(text: str) -> None:
     time.sleep(0.05)
     keyboard.send("ctrl+v")
     time.sleep(0.05)
+
+    if press_enter:
+        keyboard.send("enter")
+        time.sleep(0.05)
 
     # Restore original clipboard
     try:
