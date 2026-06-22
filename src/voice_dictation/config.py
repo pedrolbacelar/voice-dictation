@@ -21,13 +21,19 @@ LANGUAGES = ["pt", "en"]
 LANGUAGE_LABELS = {"en": "English", "pt": "Português"}
 
 # Recording limits
-MAX_RECORDING_SECONDS = 300  # 5 minutes — auto-stops to prevent runaway recordings
+MAX_RECORDING_SECONDS = 600  # 10 minutes — auto-stops to prevent runaway recordings
 
 # Hotkeys
 HOTKEY_RECORD = "ctrl+shift+space"
 HOTKEY_LANGUAGE = "ctrl+shift+l"
 HOTKEY_MODEL = "ctrl+shift+m"
 HOTKEY_RECALL = "ctrl+shift+r"
+
+# Double-tap window (seconds). A double tap of HOTKEY_RECORD — at the START or at
+# the STOP of a recording — means "no Enter" (don't auto-submit). We wait this long
+# on each single tap to rule out a second one, so larger = easier to double-tap but
+# adds this much lag before a single tap takes effect (both starting and stopping).
+DOUBLE_PRESS_SECONDS = 0.30
 
 # Visual recording indicators (primary monitor only)
 SHOW_RECORDING_BORDER = True  # pulsing red border around the screen

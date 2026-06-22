@@ -11,9 +11,11 @@ from . import config
 
 _TRANSPARENT_KEY = "#010203"  # near-black placeholder mapped to transparent
 _BORDER_COLOR = "#FF2222"
+_TRANSCRIBE_COLOR = "#FFCC00"  # yellow, shown during the transcription phase
 _BORDER_THICKNESS = 6  # px on each edge of the primary monitor
 _WIDGET_BG = "#111111"
 _WIDGET_FG = "#FFFFFF"
+_TIMER_FG = "#9BA1A6"  # muted gray for the elapsed-time counter
 _PULSE_PERIOD_S = 1.4
 _PULSE_ALPHA_MIN = 0.55
 _PULSE_ALPHA_MAX = 1.0
@@ -31,7 +33,15 @@ class RecordingOverlay:
         self._cmd_q: queue.Queue[str] = queue.Queue()
         self._root: Optional[tk.Tk] = None
         self._border: Optional[tk.Toplevel] = None
+        self._border_canvas: Optional[tk.Canvas] = None
+        self._border_rects: list[int] = []
         self._widget: Optional[tk.Toplevel] = None
+        self._label: Optional[tk.Label] = None
+        self._timer: Optional[tk.Label] = None
+        self._dot_canvas: Optional[tk.Canvas] = None
+        self._dot_id: Optional[int] = None
+        self._mode = "rec"
+        self._last_shown_sec = 0
         self._active = False
         self._pulse_started_at = 0.0
         self._enabled = config.SHOW_RECORDING_BORDER or config.SHOW_RECORDING_WIDGET
@@ -47,9 +57,13 @@ class RecordingOverlay:
 
     # --- Public API (thread-safe) ---
 
-    def show(self) -> None:
+    def show(self, no_enter: bool = False) -> None:
         if self._enabled:
-            self._cmd_q.put("show")
+            self._cmd_q.put("show_noenter" if no_enter else "show")
+
+    def show_transcribing(self) -> None:
+        if self._enabled:
+            self._cmd_q.put("show_transcribe")
 
     def hide(self) -> None:
         if self._enabled:
@@ -65,7 +79,11 @@ class RecordingOverlay:
             while True:
                 cmd = self._cmd_q.get_nowait()
                 if cmd == "show":
-                    self._show_on_tk()
+                    self._show_on_tk("rec")
+                elif cmd == "show_noenter":
+                    self._show_on_tk("rec_raw")
+                elif cmd == "show_transcribe":
+                    self._show_on_tk("transcribe")
                 elif cmd == "hide":
                     self._hide_on_tk()
         except queue.Empty:
@@ -105,15 +123,18 @@ class RecordingOverlay:
         )
         canvas.pack(fill="both", expand=True)
         t = _BORDER_THICKNESS
-        canvas.create_rectangle(0, 0, w, t, fill=_BORDER_COLOR, outline="")
-        canvas.create_rectangle(0, h - t, w, h, fill=_BORDER_COLOR, outline="")
-        canvas.create_rectangle(0, 0, t, h, fill=_BORDER_COLOR, outline="")
-        canvas.create_rectangle(w - t, 0, w, h, fill=_BORDER_COLOR, outline="")
+        self._border_rects = [
+            canvas.create_rectangle(0, 0, w, t, fill=_BORDER_COLOR, outline=""),
+            canvas.create_rectangle(0, h - t, w, h, fill=_BORDER_COLOR, outline=""),
+            canvas.create_rectangle(0, 0, t, h, fill=_BORDER_COLOR, outline=""),
+            canvas.create_rectangle(w - t, 0, w, h, fill=_BORDER_COLOR, outline=""),
+        ]
+        self._border_canvas = canvas
         self._border = top
 
     def _build_widget(self) -> None:
         assert self._root is not None
-        w, h = 86, 28
+        w, h = 140, 52
         sw = self._root.winfo_screenwidth()
         x = sw - w - 20
         y = 20
@@ -124,20 +145,50 @@ class RecordingOverlay:
         top.geometry(f"{w}x{h}+{x}+{y}")
         top.withdraw()
         frame = tk.Frame(top, bg=_WIDGET_BG)
-        frame.pack(fill="both", expand=True, padx=8, pady=4)
-        dot = tk.Canvas(frame, width=12, height=12, bg=_WIDGET_BG, highlightthickness=0)
-        dot.create_oval(1, 1, 11, 11, fill=_BORDER_COLOR, outline="")
+        frame.pack(fill="both", expand=True, padx=8, pady=5)
+
+        # Top line: ● REC
+        row = tk.Frame(frame, bg=_WIDGET_BG)
+        row.pack(side="top", anchor="w")
+        dot = tk.Canvas(row, width=12, height=12, bg=_WIDGET_BG, highlightthickness=0)
+        self._dot_id = dot.create_oval(1, 1, 11, 11, fill=_BORDER_COLOR, outline="")
+        self._dot_canvas = dot
         dot.pack(side="left")
         label = tk.Label(
-            frame, text="REC", fg=_WIDGET_FG, bg=_WIDGET_BG,
+            row, text="REC", fg=_WIDGET_FG, bg=_WIDGET_BG,
             font=("Segoe UI", 10, "bold"),
         )
         label.pack(side="left", padx=(6, 0))
+
+        # Second line: elapsed time, ticking once per second, aligned under "REC"
+        timer = tk.Label(
+            frame, text="0:00", fg=_TIMER_FG, bg=_WIDGET_BG,
+            font=("Consolas", 11, "bold"),
+        )
+        timer.pack(side="top", anchor="w", padx=(18, 0), pady=(2, 0))
+
+        self._label = label
+        self._timer = timer
         self._widget = top
 
-    def _show_on_tk(self) -> None:
+    def _show_on_tk(self, mode: str) -> None:
+        self._mode = mode
         self._active = True
         self._pulse_started_at = time.monotonic()
+        self._last_shown_sec = -1
+        color = _TRANSCRIBE_COLOR if mode == "transcribe" else _BORDER_COLOR
+        labels = {"rec": "REC", "rec_raw": "REC · raw", "transcribe": "TRANSCRIBING"}
+        # Recolor border + dot for the phase (red = recording, yellow = transcribing)
+        if self._border_canvas is not None:
+            for rid in self._border_rects:
+                self._border_canvas.itemconfigure(rid, fill=color)
+        if self._dot_canvas is not None and self._dot_id is not None:
+            self._dot_canvas.itemconfigure(self._dot_id, fill=color)
+        if self._label is not None:
+            # "raw" = text pasted without a trailing Enter (no auto-submit)
+            self._label.config(text=labels[mode])
+        if self._timer is not None:
+            self._timer.config(text="0.000" if mode == "transcribe" else "0:00")
         for win in (self._border, self._widget):
             if win is not None:
                 win.deiconify()
@@ -161,3 +212,20 @@ class RecordingOverlay:
                     win.attributes("-alpha", alpha)
                 except tk.TclError:
                     pass
+        # Tick the elapsed-time counter: ms granularity while transcribing (it's
+        # fast — proves it's actually working), mm:ss while recording.
+        if self._timer is not None:
+            if self._mode == "transcribe":
+                try:
+                    self._timer.config(text=f"{elapsed:.3f}")
+                except tk.TclError:
+                    pass
+            else:
+                sec = int(elapsed)
+                if sec != self._last_shown_sec:
+                    self._last_shown_sec = sec
+                    m, s = divmod(sec, 60)
+                    try:
+                        self._timer.config(text=f"{m}:{s:02d}")
+                    except tk.TclError:
+                        pass

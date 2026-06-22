@@ -43,8 +43,9 @@ def startup(language_label: str, model: str, hotkeys: dict[str, str]) -> None:
     print()
 
 
-def recording_start() -> None:
-    print(f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_RED}● rec{_RESET}", flush=True)
+def recording_start(press_enter: bool = True) -> None:
+    tag = "" if press_enter else f"  {_DIM}· no ⏎{_RESET}"
+    print(f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_RED}● rec{_RESET}{tag}", flush=True)
 
 
 def recording_stop(duration_s: float) -> None:

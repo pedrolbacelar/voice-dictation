@@ -28,6 +28,13 @@ class VoiceDictation:
         self._hotkeys: HotkeyManager | None = None
         self._stop_event = threading.Event()
 
+        # Double-tap detection: a second HOTKEY_RECORD press within
+        # config.DOUBLE_PRESS_SECONDS starts a recording that pastes WITHOUT Enter.
+        self._record_lock = threading.Lock()
+        self._start_timer: threading.Timer | None = None
+        self._stop_timer: threading.Timer | None = None
+        self._press_enter = True  # whether the current recording auto-sends (Enter)
+
         # Session stats
         self._total_requests = 0
         self._total_audio_s = 0.0
@@ -107,41 +114,109 @@ class VoiceDictation:
         if self._state == "transcribing":
             return  # ignore while transcribing
 
+        # Both phases debounce the press to tell a single tap from a double tap,
+        # because a double tap ALWAYS means "no Enter" (don't auto-submit):
+        #   - at START: single = normal (Enter), double = record without Enter
+        #   - at STOP:  single = honor the start mode, double = force no Enter
+        # A message is only sent (Enter) when there was no double tap at all.
         if self._state == "idle":
-            self._state = "recording"
-            self._update_icon()
-            winsound.Beep(1000, 100)
-            logger.recording_start()
-            self._paused_media = media.pause_if_playing()
-            self._recorder.start(on_max_reached=self._on_max_recording)
-            self._overlay.show()
-        else:
-            winsound.Beep(600, 100)
-            wav_bytes = self._recorder.stop()
-            self._overlay.hide()
-            if not wav_bytes:
-                self._state = "idle"
-                self._update_icon()
-                self._resume_media_if_paused()
+            with self._record_lock:
+                if self._start_timer is not None:
+                    self._start_timer.cancel()
+                    self._start_timer = None
+                    double = True
+                else:
+                    self._start_timer = threading.Timer(
+                        config.DOUBLE_PRESS_SECONDS, self._begin_recording_single
+                    )
+                    self._start_timer.daemon = True
+                    self._start_timer.start()
+                    double = False
+            if double:
+                self._begin_recording(press_enter=False)
+
+        elif self._state == "recording":
+            with self._record_lock:
+                if self._stop_timer is not None:
+                    self._stop_timer.cancel()
+                    self._stop_timer = None
+                    double = True
+                else:
+                    self._stop_timer = threading.Timer(
+                        config.DOUBLE_PRESS_SECONDS, self._stop_single
+                    )
+                    self._stop_timer.daemon = True
+                    self._stop_timer.start()
+                    double = False
+            if double:
+                self._stop_and_transcribe(force_no_enter=True)
+
+    def _begin_recording_single(self) -> None:
+        """Fired when the start-tap window elapses with no second tap."""
+        with self._record_lock:
+            self._start_timer = None
+        self._begin_recording(press_enter=True)
+
+    def _stop_single(self) -> None:
+        """Fired when the stop-tap window elapses with no second tap."""
+        with self._record_lock:
+            self._stop_timer = None
+        self._stop_and_transcribe(force_no_enter=False)
+
+    def _begin_recording(self, press_enter: bool) -> None:
+        with self._record_lock:
+            if self._state != "idle":
                 return
+            self._state = "recording"
+            self._press_enter = press_enter
+        self._update_icon()
+        winsound.Beep(1000, 100)
+        if not press_enter:
+            winsound.Beep(1400, 90)  # ascending second beep = no-Enter mode
+        logger.recording_start(press_enter=press_enter)
+        self._paused_media = media.pause_if_playing()
+        self._recorder.start(on_max_reached=self._on_max_recording)
+        self._overlay.show(no_enter=not press_enter)
 
-            audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)  # 16-bit mono
-            logger.recording_stop(audio_s)
-
+    def _stop_and_transcribe(self, force_no_enter: bool = False) -> None:
+        with self._record_lock:
+            if self._state != "recording":
+                return  # already being stopped (debounce / auto-stop race)
             self._state = "transcribing"
-            self._update_icon()
+            override = force_no_enter and self._press_enter
+            if force_no_enter:
+                self._press_enter = False
+        self._update_icon()
+        winsound.Beep(600, 100)
+        if override:
+            winsound.Beep(400, 90)  # descending second beep = Enter suppressed
+        self._finalize_recording()
 
-            threading.Thread(
-                target=self._do_transcribe,
-                args=(wav_bytes,),
-                daemon=True,
-            ).start()
+    def _finalize_recording(self) -> None:
+        """Stop the recorder and start transcription (state already 'transcribing')."""
+        wav_bytes = self._recorder.stop()
+        if not wav_bytes:
+            self._overlay.hide()
+            self._state = "idle"
+            self._update_icon()
+            self._resume_media_if_paused()
+            return
+
+        audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)  # 16-bit mono
+        logger.recording_stop(audio_s)
+
+        self._overlay.show_transcribing()  # red REC widget -> yellow "transcribing"
+        threading.Thread(
+            target=self._do_transcribe,
+            args=(wav_bytes,),
+            daemon=True,
+        ).start()
 
     def _do_transcribe(self, wav_bytes: bytes) -> None:
         try:
             result = transcribe(wav_bytes, self.language, self.model)
             if result.text.strip():
-                inject_text(result.text, press_enter=True)
+                inject_text(result.text, press_enter=self._press_enter)
 
                 # Log to terminal
                 logger.transcription_result(
@@ -169,36 +244,22 @@ class VoiceDictation:
         except Exception as e:
             logger.transcription_error(e)
         finally:
+            self._overlay.hide()
             self._state = "idle"
             self._update_icon()
             self._resume_media_if_paused()
 
     def _on_max_recording(self) -> None:
         """Called when recording hits the max duration limit."""
-        if self._state != "recording":
-            return
+        with self._record_lock:
+            if self._state != "recording":
+                return
+            self._state = "transcribing"
         logger.recording_max_reached(config.MAX_RECORDING_SECONDS)
         winsound.Beep(600, 100)
         winsound.Beep(600, 100)  # double beep to signal auto-stop
-        wav_bytes = self._recorder.stop()
-        self._overlay.hide()
-        if not wav_bytes:
-            self._state = "idle"
-            self._update_icon()
-            self._resume_media_if_paused()
-            return
-
-        audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)
-        logger.recording_stop(audio_s)
-
-        self._state = "transcribing"
         self._update_icon()
-
-        threading.Thread(
-            target=self._do_transcribe,
-            args=(wav_bytes,),
-            daemon=True,
-        ).start()
+        self._finalize_recording()  # auto-stop keeps the mode chosen at start
 
     def _on_recall(self) -> None:
         """Re-paste the most recent transcription at the cursor."""
@@ -225,6 +286,11 @@ class VoiceDictation:
         logger.model_switch(self.model)
 
     def _on_quit(self, *_args) -> None:
+        for timer in (self._start_timer, self._stop_timer):
+            if timer is not None:
+                timer.cancel()
+        self._start_timer = None
+        self._stop_timer = None
         if self._recorder.is_recording:
             self._recorder.stop()
         self._overlay.destroy()
