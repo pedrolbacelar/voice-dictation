@@ -41,7 +41,6 @@ class RecordingOverlay:
         self._dot_canvas: Optional[tk.Canvas] = None
         self._dot_id: Optional[int] = None
         self._mode = "rec"
-        self._last_shown_sec = 0
         self._active = False
         self._pulse_started_at = 0.0
         self._enabled = config.SHOW_RECORDING_BORDER or config.SHOW_RECORDING_WIDGET
@@ -175,7 +174,6 @@ class RecordingOverlay:
         self._mode = mode
         self._active = True
         self._pulse_started_at = time.monotonic()
-        self._last_shown_sec = -1
         color = _TRANSCRIBE_COLOR if mode == "transcribe" else _BORDER_COLOR
         labels = {"rec": "REC", "rec_raw": "REC · raw", "transcribe": "TRANSCRIBING"}
         # Recolor border + dot for the phase (red = recording, yellow = transcribing)
@@ -188,7 +186,7 @@ class RecordingOverlay:
             # "raw" = text pasted without a trailing Enter (no auto-submit)
             self._label.config(text=labels[mode])
         if self._timer is not None:
-            self._timer.config(text="0.000" if mode == "transcribe" else "0:00")
+            self._timer.config(text="0:00.000")
         for win in (self._border, self._widget):
             if win is not None:
                 win.deiconify()
@@ -212,20 +210,12 @@ class RecordingOverlay:
                     win.attributes("-alpha", alpha)
                 except tk.TclError:
                     pass
-        # Tick the elapsed-time counter: ms granularity while transcribing (it's
-        # fast — proves it's actually working), mm:ss while recording.
+        # Tick the elapsed-time counter — same M:SS.mmm format in both phases
         if self._timer is not None:
-            if self._mode == "transcribe":
-                try:
-                    self._timer.config(text=f"{elapsed:.3f}")
-                except tk.TclError:
-                    pass
-            else:
-                sec = int(elapsed)
-                if sec != self._last_shown_sec:
-                    self._last_shown_sec = sec
-                    m, s = divmod(sec, 60)
-                    try:
-                        self._timer.config(text=f"{m}:{s:02d}")
-                    except tk.TclError:
-                        pass
+            total_ms = int(elapsed * 1000)
+            m, rem = divmod(total_ms, 60_000)
+            s, ms = divmod(rem, 1000)
+            try:
+                self._timer.config(text=f"{m}:{s:02d}.{ms:03d}")
+            except tk.TclError:
+                pass
