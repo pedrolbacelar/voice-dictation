@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ctypes
 import math
 import queue
 import time
 import tkinter as tk
+from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config
@@ -12,7 +14,7 @@ from . import config
 _TRANSPARENT_KEY = "#010203"  # near-black placeholder mapped to transparent
 _BORDER_COLOR = "#FF2222"
 _TRANSCRIBE_COLOR = "#FFCC00"  # yellow, shown during the transcription phase
-_BORDER_THICKNESS = 6  # px on each edge of the primary monitor
+_BORDER_THICKNESS = 6  # px on each edge of every monitor
 _WIDGET_BG = "#111111"
 _WIDGET_FG = "#FFFFFF"
 _TIMER_FG = "#9BA1A6"  # muted gray for the elapsed-time counter
@@ -21,25 +23,83 @@ _PULSE_ALPHA_MIN = 0.55
 _PULSE_ALPHA_MAX = 1.0
 
 
-class RecordingOverlay:
-    """Pulsing red border + small 'REC' widget shown while audio is being recorded.
+def _enumerate_monitors() -> list[tuple[int, int, int, int]]:
+    """Geometry of every connected monitor as ``(x, y, w, h)`` tuples, in the
+    same virtual-screen pixel space Tk uses (the process is DPI-unaware, so the
+    two coordinate systems coincide — including negative origins for monitors
+    placed left of / above the primary one).
 
-    The Tk root lives on the main thread (where this class is constructed).
-    `show()` / `hide()` are safe to call from any thread — they push onto a
-    queue that `pump()` drains from the main thread, alongside `root.update()`.
+    Returns ``[]`` on any failure (e.g. not running on Windows) so the caller
+    can fall back to the primary monitor alone.
+    """
+    try:
+        class _RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        monitors: list[tuple[int, int, int, int]] = []
+        proc_type = ctypes.WINFUNCTYPE(
+            ctypes.c_int,  # BOOL — keep enumerating
+            ctypes.c_void_p,  # HMONITOR
+            ctypes.c_void_p,  # HDC
+            ctypes.POINTER(_RECT),  # LPRECT (the monitor's bounds)
+            ctypes.c_void_p,  # LPARAM
+        )
+
+        def _on_monitor(_hmon, _hdc, lprc, _lparam):
+            r = lprc.contents
+            monitors.append((r.left, r.top, r.right - r.left, r.bottom - r.top))
+            return 1
+
+        ok = ctypes.windll.user32.EnumDisplayMonitors(
+            0, 0, proc_type(_on_monitor), 0
+        )
+        if not ok or not monitors:
+            return []
+        return monitors
+    except Exception:
+        return []
+
+
+@dataclass
+class _MonitorOverlay:
+    """Every Tk window/item that makes up the indicator on a single monitor.
+
+    Adding a new visual element is just another field here plus a line in the
+    relevant build/show/pulse step — the rest of the class iterates generically.
+    """
+
+    border: Optional[tk.Toplevel] = None
+    border_canvas: Optional[tk.Canvas] = None
+    border_rects: list[int] = field(default_factory=list)
+    widget: Optional[tk.Toplevel] = None
+    label: Optional[tk.Label] = None
+    timer: Optional[tk.Label] = None
+    dot_canvas: Optional[tk.Canvas] = None
+    dot_id: Optional[int] = None
+
+    def windows(self) -> list[tk.Toplevel]:
+        return [w for w in (self.border, self.widget) if w is not None]
+
+
+class RecordingOverlay:
+    """Pulsing red border + small 'REC' widget shown while audio is recorded.
+
+    Mirrored onto **every** monitor (vertical or horizontal), so the cue is
+    visible no matter which screen you're looking at. The Tk root lives on the
+    main thread (where this class is constructed). `show()` / `hide()` are safe
+    to call from any thread — they push onto a queue that `pump()` drains from
+    the main thread, alongside `root.update()`.
     """
 
     def __init__(self) -> None:
         self._cmd_q: queue.Queue[str] = queue.Queue()
         self._root: Optional[tk.Tk] = None
-        self._border: Optional[tk.Toplevel] = None
-        self._border_canvas: Optional[tk.Canvas] = None
-        self._border_rects: list[int] = []
-        self._widget: Optional[tk.Toplevel] = None
-        self._label: Optional[tk.Label] = None
-        self._timer: Optional[tk.Label] = None
-        self._dot_canvas: Optional[tk.Canvas] = None
-        self._dot_id: Optional[int] = None
+        self._overlays: list[_MonitorOverlay] = []
         self._mode = "rec"
         self._active = False
         self._pulse_started_at = 0.0
@@ -48,10 +108,14 @@ class RecordingOverlay:
             return
         self._root = tk.Tk()
         self._root.withdraw()
-        if config.SHOW_RECORDING_BORDER:
-            self._build_border()
-        if config.SHOW_RECORDING_WIDGET:
-            self._build_widget()
+        self._root.update_idletasks()
+        for (mx, my, mw, mh) in self._monitor_rects():
+            ov = _MonitorOverlay()
+            if config.SHOW_RECORDING_BORDER:
+                self._build_border(ov, mx, my, mw, mh)
+            if config.SHOW_RECORDING_WIDGET:
+                self._build_widget(ov, mx, my, mw, mh)
+            self._overlays.append(ov)
         self._root.update_idletasks()
 
     # --- Public API (thread-safe) ---
@@ -106,15 +170,25 @@ class RecordingOverlay:
 
     # --- Tk internals ---
 
-    def _build_border(self) -> None:
+    def _monitor_rects(self) -> list[tuple[int, int, int, int]]:
+        """Every monitor's geometry, falling back to the primary one alone."""
+        rects = _enumerate_monitors()
+        if rects:
+            return rects
         assert self._root is not None
-        w = self._root.winfo_screenwidth()
-        h = self._root.winfo_screenheight()
+        return [
+            (0, 0, self._root.winfo_screenwidth(), self._root.winfo_screenheight())
+        ]
+
+    def _build_border(
+        self, ov: _MonitorOverlay, x: int, y: int, w: int, h: int
+    ) -> None:
+        assert self._root is not None
         top = tk.Toplevel(self._root)
         top.overrideredirect(True)
         top.attributes("-topmost", True)
         top.attributes("-transparentcolor", _TRANSPARENT_KEY)
-        top.geometry(f"{w}x{h}+0+0")
+        top.geometry(f"{w}x{h}+{x}+{y}")
         top.configure(bg=_TRANSPARENT_KEY)
         top.withdraw()
         canvas = tk.Canvas(
@@ -122,21 +196,24 @@ class RecordingOverlay:
         )
         canvas.pack(fill="both", expand=True)
         t = _BORDER_THICKNESS
-        self._border_rects = [
+        ov.border_rects = [
             canvas.create_rectangle(0, 0, w, t, fill=_BORDER_COLOR, outline=""),
             canvas.create_rectangle(0, h - t, w, h, fill=_BORDER_COLOR, outline=""),
             canvas.create_rectangle(0, 0, t, h, fill=_BORDER_COLOR, outline=""),
             canvas.create_rectangle(w - t, 0, w, h, fill=_BORDER_COLOR, outline=""),
         ]
-        self._border_canvas = canvas
-        self._border = top
+        ov.border_canvas = canvas
+        ov.border = top
 
-    def _build_widget(self) -> None:
+    def _build_widget(
+        self, ov: _MonitorOverlay, mx: int, my: int, mw: int, mh: int
+    ) -> None:
         assert self._root is not None
         w, h = 140, 52
-        sw = self._root.winfo_screenwidth()
-        x = sw - w - 20
-        y = 20
+        # Anchor to this monitor's own top-right corner (works for any
+        # orientation, including narrow vertical screens).
+        x = mx + mw - w - 20
+        y = my + 20
         top = tk.Toplevel(self._root)
         top.overrideredirect(True)
         top.attributes("-topmost", True)
@@ -150,8 +227,8 @@ class RecordingOverlay:
         row = tk.Frame(frame, bg=_WIDGET_BG)
         row.pack(side="top", anchor="w")
         dot = tk.Canvas(row, width=12, height=12, bg=_WIDGET_BG, highlightthickness=0)
-        self._dot_id = dot.create_oval(1, 1, 11, 11, fill=_BORDER_COLOR, outline="")
-        self._dot_canvas = dot
+        ov.dot_id = dot.create_oval(1, 1, 11, 11, fill=_BORDER_COLOR, outline="")
+        ov.dot_canvas = dot
         dot.pack(side="left")
         label = tk.Label(
             row, text="REC", fg=_WIDGET_FG, bg=_WIDGET_BG,
@@ -166,9 +243,9 @@ class RecordingOverlay:
         )
         timer.pack(side="top", anchor="w", padx=(18, 0), pady=(2, 0))
 
-        self._label = label
-        self._timer = timer
-        self._widget = top
+        ov.label = label
+        ov.timer = timer
+        ov.widget = top
 
     def _show_on_tk(self, mode: str) -> None:
         self._mode = mode
@@ -176,27 +253,27 @@ class RecordingOverlay:
         self._pulse_started_at = time.monotonic()
         color = _TRANSCRIBE_COLOR if mode == "transcribe" else _BORDER_COLOR
         labels = {"rec": "REC", "rec_raw": "REC · raw", "transcribe": "TRANSCRIBING"}
-        # Recolor border + dot for the phase (red = recording, yellow = transcribing)
-        if self._border_canvas is not None:
-            for rid in self._border_rects:
-                self._border_canvas.itemconfigure(rid, fill=color)
-        if self._dot_canvas is not None and self._dot_id is not None:
-            self._dot_canvas.itemconfigure(self._dot_id, fill=color)
-        if self._label is not None:
-            # "raw" = text pasted without a trailing Enter (no auto-submit)
-            self._label.config(text=labels[mode])
-        if self._timer is not None:
-            self._timer.config(text="0:00.000")
-        for win in (self._border, self._widget):
-            if win is not None:
+        for ov in self._overlays:
+            # Recolor border + dot for the phase (red = recording, yellow = transcribing)
+            if ov.border_canvas is not None:
+                for rid in ov.border_rects:
+                    ov.border_canvas.itemconfigure(rid, fill=color)
+            if ov.dot_canvas is not None and ov.dot_id is not None:
+                ov.dot_canvas.itemconfigure(ov.dot_id, fill=color)
+            if ov.label is not None:
+                # "raw" = text pasted without a trailing Enter (no auto-submit)
+                ov.label.config(text=labels[mode])
+            if ov.timer is not None:
+                ov.timer.config(text="0:00.000")
+            for win in ov.windows():
                 win.deiconify()
                 win.lift()
                 win.attributes("-topmost", True)
 
     def _hide_on_tk(self) -> None:
         self._active = False
-        for win in (self._border, self._widget):
-            if win is not None:
+        for ov in self._overlays:
+            for win in ov.windows():
                 win.withdraw()
 
     def _tick_pulse(self) -> None:
@@ -204,18 +281,19 @@ class RecordingOverlay:
         phase = (elapsed % _PULSE_PERIOD_S) / _PULSE_PERIOD_S
         eased = 0.5 - 0.5 * math.cos(phase * 2 * math.pi)
         alpha = _PULSE_ALPHA_MIN + (_PULSE_ALPHA_MAX - _PULSE_ALPHA_MIN) * eased
-        for win in (self._border, self._widget):
-            if win is not None:
+        # Same M:SS.mmm elapsed-time text on every monitor's widget
+        total_ms = int(elapsed * 1000)
+        m, rem = divmod(total_ms, 60_000)
+        s, ms = divmod(rem, 1000)
+        timer_text = f"{m}:{s:02d}.{ms:03d}"
+        for ov in self._overlays:
+            for win in ov.windows():
                 try:
                     win.attributes("-alpha", alpha)
                 except tk.TclError:
                     pass
-        # Tick the elapsed-time counter — same M:SS.mmm format in both phases
-        if self._timer is not None:
-            total_ms = int(elapsed * 1000)
-            m, rem = divmod(total_ms, 60_000)
-            s, ms = divmod(rem, 1000)
-            try:
-                self._timer.config(text=f"{m}:{s:02d}.{ms:03d}")
-            except tk.TclError:
-                pass
+            if ov.timer is not None:
+                try:
+                    ov.timer.config(text=timer_text)
+                except tk.TclError:
+                    pass

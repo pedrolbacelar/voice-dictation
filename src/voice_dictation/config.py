@@ -35,6 +35,6 @@ HOTKEY_RECALL = "ctrl+shift+r"
 # adds this much lag before a single tap takes effect (both starting and stopping).
 DOUBLE_PRESS_SECONDS = 0.30
 
-# Visual recording indicators (primary monitor only)
-SHOW_RECORDING_BORDER = True  # pulsing red border around the screen
-SHOW_RECORDING_WIDGET = True  # small "● REC" widget at the top-right corner
+# Visual recording indicators (mirrored onto every connected monitor)
+SHOW_RECORDING_BORDER = True  # pulsing red border around each screen
+SHOW_RECORDING_WIDGET = True  # small "● REC" widget at each screen's top-right corner
