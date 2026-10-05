@@ -9,6 +9,7 @@ from . import config
 from . import logger
 from . import db
 from . import media
+from . import recordings
 from .hotkeys import HotkeyManager
 from .overlay import RecordingOverlay
 from .recorder import Recorder
@@ -205,6 +206,12 @@ class VoiceDictation:
         audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)  # 16-bit mono
         logger.recording_stop(audio_s)
 
+        # Save before calling the API, so even a failed request can be retried.
+        try:
+            recordings.save(wav_bytes)
+        except OSError as e:
+            logger.recording_save_error(e)
+
         self._overlay.show_transcribing()  # red REC widget -> yellow "transcribing"
         threading.Thread(
             target=self._do_transcribe,
@@ -273,6 +280,31 @@ class VoiceDictation:
         inject_text(text)
         logger.recall_injected(text)
 
+    def _on_retry(self) -> None:
+        """Re-send the last saved recording to the API (current model/language).
+
+        The result is pasted WITHOUT Enter: a retry is a correction, so the text
+        is left for review instead of auto-submitting.
+        """
+        with self._record_lock:
+            if self._state != "idle":
+                return
+            wav_bytes = recordings.latest()
+            if wav_bytes is None:
+                logger.retry_empty()
+                return
+            self._state = "transcribing"
+            self._press_enter = False
+        self._update_icon()
+        audio_s = len(wav_bytes) / (config.SAMPLE_RATE * 2)  # 16-bit mono
+        logger.retry_start(audio_s, self.model)
+        self._overlay.show_transcribing()
+        threading.Thread(
+            target=self._do_transcribe,
+            args=(wav_bytes,),
+            daemon=True,
+        ).start()
+
     def _on_toggle_language(self, *_args) -> None:
         self._language_idx = (self._language_idx + 1) % len(config.LANGUAGES)
         self._update_icon()
@@ -314,6 +346,7 @@ class VoiceDictation:
         self._hotkeys.register(config.HOTKEY_LANGUAGE, self._on_toggle_language)
         self._hotkeys.register(config.HOTKEY_MODEL, self._on_toggle_model)
         self._hotkeys.register(config.HOTKEY_RECALL, self._on_recall)
+        self._hotkeys.register(config.HOTKEY_RETRY, self._on_retry)
         failures = self._hotkeys.start()
         for spec, err in failures:
             print(f"ERROR: failed to register hotkey {spec!r} (GetLastError={err}) — likely owned by another process")
@@ -326,6 +359,7 @@ class VoiceDictation:
                 "language": config.HOTKEY_LANGUAGE,
                 "model": config.HOTKEY_MODEL,
                 "recall": config.HOTKEY_RECALL,
+                "retry": config.HOTKEY_RETRY,
                 "quit": "ctrl+c",
             },
         )

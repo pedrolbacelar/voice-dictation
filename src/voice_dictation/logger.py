@@ -129,6 +129,29 @@ def recall_empty() -> None:
     )
 
 
+def retry_start(duration_s: float, model: str) -> None:
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_CYAN}↻ retry{_RESET}"
+        f"  {_DIM}{duration_s:.1f}s audio • {model}{_RESET}",
+        flush=True,
+    )
+
+
+def retry_empty() -> None:
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_DIM}  (no saved recording to retry){_RESET}",
+        flush=True,
+    )
+
+
+def recording_save_error(error: Exception) -> None:
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_YELLOW}⚠ save{_RESET}"
+        f"  {_DIM}recording not saved for retry: {error}{_RESET}",
+        flush=True,
+    )
+
+
 def language_switch(label: str) -> None:
     print(
         f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_CYAN}⇄ lang{_RESET}   {label}",

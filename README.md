@@ -25,6 +25,8 @@ voice-dictation
 | `Ctrl+Shift+Space` | Start/stop recording |
 | `Ctrl+Shift+L` | Switch language (English / Portugues) |
 | `Ctrl+Shift+M` | Cycle model |
+| `Ctrl+Shift+R` | Re-paste the last transcription |
+| `Ctrl+Shift+T` | Retry: re-send the last recording to the API (current model/language), paste without Enter |
 | `Ctrl+C` | Quit |
 
 ### Flow
@@ -61,6 +63,13 @@ All transcriptions are logged to a local SQLite database (`voice_dictation.db` i
 - Input/output/total tokens
 - Estimated cost
 
+## Saved recordings
+
+Each recording is written to `recordings/` (gitignored) before the API call, so a
+hallucinated or failed transcription can be retried with `Ctrl+Shift+T` without
+speaking again. Only the last `KEEP_LAST_RECORDINGS` (2) are kept; older files are
+deleted on every save, so the folder never grows.
+
 ## Architecture
 
 ```mermaid
@@ -84,6 +93,7 @@ src/voice_dictation/
   injector.py     # Clipboard + Ctrl+V text injection (Win32)
   logger.py       # Colored terminal output
   db.py           # SQLite logging
+  recordings.py   # Last-N recordings on disk, for retry
 ```
 
 ## Requirements

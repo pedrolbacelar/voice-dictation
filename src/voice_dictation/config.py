@@ -23,11 +23,17 @@ LANGUAGE_LABELS = {"en": "English", "pt": "Português"}
 # Recording limits
 MAX_RECORDING_SECONDS = 600  # 10 minutes — auto-stops to prevent runaway recordings
 
+# Saved recordings (for HOTKEY_RETRY). Only the newest few are kept; older ones
+# are deleted on each save, so the folder never grows.
+RECORDINGS_DIR = _REPO_ROOT / "recordings"
+KEEP_LAST_RECORDINGS = 2
+
 # Hotkeys
 HOTKEY_RECORD = "ctrl+shift+space"
 HOTKEY_LANGUAGE = "ctrl+shift+l"
 HOTKEY_MODEL = "ctrl+shift+m"
 HOTKEY_RECALL = "ctrl+shift+r"
+HOTKEY_RETRY = "ctrl+shift+t"  # re-send the last recording to the API
 
 # Double-tap window (seconds). A double tap of HOTKEY_RECORD — at the START or at
 # the STOP of a recording — means "no Enter" (don't auto-submit). We wait this long
