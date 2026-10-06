@@ -14,7 +14,7 @@ from .hotkeys import HotkeyManager
 from .overlay import RecordingOverlay
 from .recorder import Recorder
 from .transcriber import transcribe
-from .injector import inject_text
+from .injector import ClipboardError, inject_text
 
 
 class VoiceDictation:
@@ -223,7 +223,10 @@ class VoiceDictation:
         try:
             result = transcribe(wav_bytes, self.language, self.model)
             if result.text.strip():
-                inject_text(result.text, press_enter=self._press_enter)
+                try:
+                    inject_text(result.text, press_enter=self._press_enter)
+                except ClipboardError as e:
+                    logger.paste_error(e)  # still logged below, so Ctrl+Shift+R can re-paste it
 
                 # Log to terminal
                 logger.transcription_result(
@@ -277,7 +280,11 @@ class VoiceDictation:
             logger.recall_empty()
             return
         text = recent[0]["text"]
-        inject_text(text)
+        try:
+            inject_text(text)
+        except ClipboardError as e:
+            logger.paste_error(e)
+            return
         logger.recall_injected(text)
 
     def _on_retry(self) -> None:

@@ -35,6 +35,16 @@ HOTKEY_MODEL = "ctrl+shift+m"
 HOTKEY_RECALL = "ctrl+shift+r"
 HOTKEY_RETRY = "ctrl+shift+t"  # re-send the last recording to the API
 
+# Clipboard paste (see injector.py). The transcription is put on the clipboard,
+# pasted with Ctrl+V, and the user's clipboard text is put back a moment later.
+PASTE_SETTLE_SECONDS = 0.05  # between clipboard write and Ctrl+V, and between Ctrl+V and Enter
+CLIPBOARD_OPEN_TIMEOUT_SECONDS = 0.5  # keep retrying OpenClipboard this long while another process holds it
+CLIPBOARD_OPEN_RETRY_SECONDS = 0.01
+CLIPBOARD_WRITE_ATTEMPTS = 3  # write + read-back verifications before giving up on the paste
+# Electron/Chromium targets read the clipboard well after the Ctrl+V key event,
+# later still when busy; restoring sooner than this pasted the user's old clipboard.
+CLIPBOARD_RESTORE_DELAY_SECONDS = 1.5
+
 # Double-tap window (seconds). A double tap of HOTKEY_RECORD — at the START or at
 # the STOP of a recording — means "no Enter" (don't auto-submit). We wait this long
 # on each single tap to rule out a second one, so larger = easier to double-tap but

@@ -70,6 +70,17 @@ hallucinated or failed transcription can be retried with `Ctrl+Shift+T` without
 speaking again. Only the last `KEEP_LAST_RECORDINGS` (2) are kept; older files are
 deleted on every save, so the folder never grows.
 
+## Clipboard
+
+The transcription is put on the clipboard and pasted with `Ctrl+V`; the text that
+was on the clipboard before is put back `CLIPBOARD_RESTORE_DELAY_SECONDS` (1.5 s)
+later. The delay matters: Electron/Chromium apps read the clipboard well after the
+key event, and restoring sooner made them paste the old clipboard. The write is
+verified (read back) before `Ctrl+V` is sent, so a busy clipboard can never make
+the paste land stale content; if you copy something during the delay, your copy
+wins and nothing is put back. Non-text clipboard content (images, files) is not
+preserved.
+
 ## Architecture
 
 ```mermaid

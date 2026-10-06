@@ -112,6 +112,22 @@ def transcription_error(error: Exception) -> None:
     )
 
 
+def paste_error(error: Exception) -> None:
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_RED}✗ paste{_RESET}"
+        f"  {_DIM}not pasted ({error}) — Ctrl+Shift+R re-pastes it{_RESET}",
+        flush=True,
+    )
+
+
+def clipboard_restore_error(error: Exception) -> None:
+    print(
+        f"  {_DIM_WHITE}{_timestamp()}{_RESET}  {_YELLOW}⚠ clipboard{_RESET}"
+        f"  {_DIM}previous clipboard text not restored: {error}{_RESET}",
+        flush=True,
+    )
+
+
 def recall_injected(text: str) -> None:
     preview = text.strip().replace("\n", " ")
     if len(preview) > 80:
